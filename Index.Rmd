@@ -1,0 +1,301 @@
+---
+title: "Datos Policiales"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+```
+```{r carga de paquetes}
+### Carga de paquetes:
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(plotly)
+library(DT)
+library(readr)
+library(readxl)
+library(lubridate)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(flexdashboard)
+library(stringi)
+
+```
+
+```{r carga de datos}
+Estadisticas <-
+read_xls("C:/Users/HP/Desktop/tarea/estadisticaspoliciales2021.xls") 
+
+cantones <-
+  st_read(
+    dsn = "C:/Users/HP/Desktop/tarea/cantones_simplificados.geojson",
+    quiet = TRUE
+  ) %>%
+  st_transform(4326) # transformación a WGS84
+```
+
+Pagina 1
+====================================================================
+
+### Mapa cantidad de delitos en diferentes cantones de Costa Rica
+```{r generación del mapa, message=FALSE}
+# En el data frame de cantones
+cantones <-
+  cantones %>%
+  mutate(canton_normalizado = tolower(stri_trans_general(canton, id = "Latin-ASCII")))
+
+# En el data frame de delitos
+Estadisticas <-
+  Estadisticas %>%
+  mutate(canton_normalizado = tolower(stri_trans_general(Canton, id = "Latin-ASCII")))
+
+Estadisticas %>%
+  left_join(
+    dplyr::select(st_drop_geometry(cantones),
+                  canton_normalizado, cod_canton),
+    by = "canton_normalizado",
+    copy = FALSE,
+    keep = FALSE
+  ) %>%
+  filter(is.na(cod_canton) & canton_normalizado != "desconocido") %>% # los cod_canton = NA son los que no están en el data frame de cantones
+  distinct(canton_normalizado) # se despliegan solo los nombres de cantones diferentes
+
+# cantones en delitos
+Estadisticas <-
+  Estadisticas %>%
+  mutate(Canton = if_else(Canton == "LEON CORTES", "LEON CORTES CASTRO", Canton)) %>%
+  mutate(Canton = if_else(Canton == "VASQUEZ DE CORONADO", "VAZQUEZ DE CORONADO", Canton))
+
+# Se realiza nuevamente esta operación para reflejar los cambios en los nombres de cantones
+Estadisticas <-
+  Estadisticas %>%
+  mutate(canton_normalizado = tolower(stri_trans_general(Canton, id = "Latin-ASCII")))
+
+# Revisión
+Estadisticas %>%
+  left_join(
+    dplyr::select(st_drop_geometry(cantones),
+                  canton_normalizado, cod_canton),
+    by = "canton_normalizado",
+    copy = FALSE,
+    keep = FALSE
+  ) %>%
+  filter(is.na(cod_canton) & canton_normalizado != "desconocido") %>% # los cod_canton = NA son los que no están en el data frame de cantones
+  distinct(canton_normalizado)
+
+# Unión del código de cantón a Est_pol
+Estadisticas <-
+  Estadisticas %>%
+  left_join(
+    dplyr::select(
+      st_drop_geometry(cantones),
+      cod_canton,
+      canton_normalizado
+    ),
+    by = "canton_normalizado",
+    copy = FALSE,
+    keep = FALSE
+  )
+
+# Conteo de registros por código de cantón
+
+delitos_x_canton <-
+  Estadisticas %>%
+  count(cod_canton, name = "delitos")
+
+# Unión de cantidad de delitos por cantón a cantones
+
+cantones_delitos <-
+  cantones %>%
+  left_join(
+    delitos_x_canton,
+    by = "cod_canton",
+    copy = FALSE,
+    keep = FALSE
+  )
+
+# Paleta de colores para los mapas
+
+colores_cantones_delitos <-
+  colorNumeric(palette = "Greens",
+               domain = cantones_delitos$delitos,
+               na.color = "transparent")
+
+# Mapa delitos en cantones
+
+leaflet() %>%
+  setView(# centro y nivel inicial de acercamiento
+    lng = -84.19452,
+    lat = 9.572735,
+    zoom = 7) %>%
+  addTiles(group = "OpenStreetMap") %>% # capa base
+  addPolygons(
+    # capa de polígonos
+    data = cantones_delitos,
+    fillColor = ~ colores_cantones_delitos(cantones_delitos$delitos),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      # ventana emergente
+      paste(
+        "<strong>Cantón:</strong>",
+        cantones_delitos$canton
+      ),
+      paste(
+        "<strong>Delitos:</strong>",
+        cantones_delitos$delitos
+      ),
+      sep = '<br/>'
+    ),
+    group = "Delitos en cantones"
+  ) %>%
+  addLayersControl(
+    # control de capas
+    baseGroups = c("OpenStreetMap"),
+    overlayGroups = c("Delitos en cantones")
+  ) %>%
+  addLegend(
+    # leyenda
+    position = "bottomleft",
+    pal = colores_cantones_delitos,
+    values = cantones_delitos$delitos,
+    group = "Delitos",
+    title = "Cantidad de delitos"
+  )
+
+```
+
+Pagina 2
+========================================================================
+
+
+
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+
+### Tabla interactiva de las estadísticas policiales 
+
+```{r}
+Estadisticas %>%
+  dplyr::select(Delito, Fecha, Victima, Edad, Genero, Provincia, Canton) %>%
+  datatable(colnames = c(
+    "Delito",
+    "Fecha",
+    "Víctima",
+    "Edad",
+    "Género",
+    "Provincia",
+    "Cantón"
+  ), options = list(pageLength = 5, language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')))
+
+
+```
+
+
+Pagina 3
+=================================================================================
+
+
+Column {data-width=250}
+-----------------------------------------------------------------------
+
+### Cantidad de delitos por tipo de delito 
+
+```{r}
+Delitos <-
+Estadisticas %>%
+  count(Delito) %>%
+  ggplot(aes(x = reorder(Delito, n), y = n)) + 
+  geom_bar(stat = "identity") +
+coord_flip() +
+ggtitle("Cantidad de delitos por tipo de delito") + 
+  xlab("Tipo de delito") + 
+  ylab("Cantidad de delitos") + 
+  theme_minimal()
+ggplotly(Delitos) %>% 
+  config(locale = 'es')
+```
+
+
+
+
+Pagina 4
+=============================================================================
+
+### Cantidad de delitos por tipo de victima
+
+```{r Cantidad de delitos por tipo de victima} 
+Delitos_victimas <-
+  Estadisticas %>%
+  dplyr::select(Delito, Victima) %>%
+  count(Victima) %>%
+  #ggplot(aes(x = Delito, y = Victima)) +
+  ggplot(aes(x = reorder(Victima, n), y = n)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  ggtitle("Cantidad de delitos por tipo de víctima") +
+  xlab("Tipo de delito") +
+  ylab("Víctima") +
+  theme_minimal()
+
+ggplotly(Delitos_victimas) %>%
+  config(locale = 'es')
+```
+
+Pagina 5
+-------------------------------------------------------------------------------------
+
+### Cantidad de delitos registrados
+
+```{r}
+Del_mes <- Estadisticas %>%
+  dplyr::select(Fecha, Delito, Hora)
+```
+
+
+```{r}
+graph2 <- 
+Del_mes %>% mutate(mes = month(Fecha, label = FALSE)) %>%
+  ggplot() +
+  geom_bar(aes(x = mes)) + 
+  ggtitle("Cantidad de delitos por mes") + 
+  xlab("Mes") + 
+  ylab("Cantidad") + 
+  theme_minimal() 
+ggplotly(graph2) %>%
+  config(locale = 'es')
+```
+
+Pagina 6 
+===================================================================================
+### Proporción de la ocurrencia de delitos
+
+```{r}
+Propor_gen <- Estadisticas %>%
+  dplyr::select(Delito, Genero)
+```
+
+```{r}
+Apiladas_propor_genero <-
+  Propor_gen %>%
+  ggplot(aes(x = Delito, fill = Genero)) + 
+  geom_bar(position = "fill") +
+  ggtitle("Proporción de la ocurrencia de delitos por género") +
+  xlab("Delito") +
+  ylab("Proporción") +
+  labs(fill = "Genero") +
+  theme_minimal()
+
+ggplotly(Apiladas_propor_genero) %>% config(locale = 'es')
+```
+
+
